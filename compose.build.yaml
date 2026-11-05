@@ -1,0 +1,9 @@
+# 本地构建覆盖：不使用 GHCR 预构建镜像时使用。
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+#
+# 构建需要 Node 与 Python 依赖下载；普通部署直接 docker compose up -d 即可。
+services:
+  app:
+    image: ltx-portal:dev
+    build: .

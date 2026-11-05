@@ -1,0 +1,30 @@
+# 一键部署：拉取 GHCR 预构建镜像。
+#
+#   cp .env.example .env      # 至少设置 ADMIN_PASSWORD
+#   docker compose up -d
+#
+# 需要本机构建（不使用预构建镜像）时用：
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build
+services:
+  app:
+    image: ghcr.io/tnanice/ltx-portal:${LTX_TAG:-1.0.0}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${APP_PORT:-8896}:8000"
+    environment:
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      CATALOG_URL: "${CATALOG_URL:-https://ltx.libray.workers.dev/api/items}"
+      PUBLIC_URL: "${PUBLIC_URL:-}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      ALLOWED_HOSTS: "${ALLOWED_HOSTS:-*}"
+    volumes:
+      - ./data:/data
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

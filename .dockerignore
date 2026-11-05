@@ -1,0 +1,11 @@
+.git
+.env
+data
+frontend/node_modules
+frontend/dist
+**/__pycache__
+**/.pytest_cache
+**/test-results
+**/playwright-report
+*.tar.gz
+artifacts

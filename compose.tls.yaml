@@ -1,0 +1,21 @@
+# Set BIND_IP=127.0.0.1, PUBLIC_URL=https://your-domain, COOKIE_SECURE=true in .env.
+services:
+  app:
+    environment:
+      PUBLIC_URL: "https://${DOMAIN:?Set DOMAIN in .env}"
+      COOKIE_SECURE: "true"
+      ALLOWED_HOSTS: "${DOMAIN},app,127.0.0.1,localhost"
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: "${DOMAIN}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    depends_on:
+      - app

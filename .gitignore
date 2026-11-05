@@ -1,0 +1,14 @@
+.env
+.venv/
+data/*
+!data/.gitkeep
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.log
+*.tar.gz
+playwright-report/
+test-results/
+artifacts/
