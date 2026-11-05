@@ -5,7 +5,7 @@ import secrets
 import sqlite3
 import time
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -54,7 +54,8 @@ class QRInput(BaseModel):
 
 
 class TaskInput(BaseModel):
-    code: str = Field(min_length=1, max_length=128)
+    code: str | None = Field(default=None, min_length=1, max_length=128)
+    link: str | None = Field(default=None, min_length=1, max_length=16384)
     link_index: int = Field(default=0, ge=0)
 
 
@@ -341,15 +342,33 @@ def create_app(config=None, provider=None):
     async def create_task(body: TaskInput, u=Depends(user)):
         limit.check(('submit', u['id']), 15)
         b = svc.binding(u['id'])
-        resource = next((r for r in catalog.data()['items'] if r['code'] == body.code), None)
-        if not resource or body.link_index >= len(resource['links']):
-            raise HTTPException(404, '资源链接不存在')
-        link = resource['links'][body.link_index]
-        key, info_hash = link_identity(link)
+        if (body.code is None) == (body.link is None):
+            raise HTTPException(422, '请提供资源编号或一条完整的 e2k 链接')
+        if body.link is not None:
+            link = body.link.strip()
+            if not re.fullmatch(r'ed2k://\|file\|[^|\r\n]+\|[0-9]+\|[0-9a-fA-F]{32}\|(?:[^\r\n]*)/', link):
+                raise HTTPException(422, '请粘贴一条完整的 ed2k:// 文件链接')
+            key, info_hash = link_identity(link)
+            title = unquote(link.split('|')[2])[:1024]
+            code = 'ED2K-' + info_hash[:12].upper()
+            # Preserve catalog association when the pasted link already belongs to it.
+            for item in catalog.data()['items']:
+                if any(candidate.strip() == link for candidate in item['links']):
+                    code = item['code']
+                    title = item.get('title_zh') or item.get('title') or code
+                    break
+        else:
+            resource = next((r for r in catalog.data()['items'] if r['code'] == body.code), None)
+            if not resource or body.link_index >= len(resource['links']):
+                raise HTTPException(404, '资源链接不存在')
+            link = resource['links'][body.link_index]
+            key, info_hash = link_identity(link)
+            code = body.code
+            title = resource.get('title_zh') or resource.get('title') or code
         now, tid = time.time(), secrets.token_urlsafe(16)
         with db.connect() as c:
             c.execute('INSERT OR IGNORE INTO tasks(id,user_id,revision,resource,title,link,link_key,info_hash,state,created,updated) '
-                      'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (tid, u['id'], b['revision'], body.code, resource.get('title_zh') or resource.get('title') or body.code,
+                      'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (tid, u['id'], b['revision'], code, title,
                                                        link, key, info_hash, 'submitting', now, now))
             row = dict(c.execute('SELECT * FROM tasks WHERE user_id=? AND revision=? AND link_key=?', (u['id'], b['revision'], key)).fetchone())
         svc.spawn(svc.process_task(row['id']))

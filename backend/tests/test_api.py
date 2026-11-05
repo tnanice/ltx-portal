@@ -322,3 +322,28 @@ def test_slow_task_does_not_block_another_task_for_the_same_user(env):
         finally:
             release.set(); await slow
     c.portal.call(exercise)
+
+
+def test_pasted_ed2k_submission_and_catalog_dedup(env):
+    app, c, fake = env
+    login(c); bind(c)
+    pasted = c.post('/api/me/tasks', json={'link': '  '+LINK+'\n'})
+    assert pasted.status_code == 202
+    assert pasted.json()['resource'] == 'TEST-001'
+    existing = c.post('/api/me/tasks', json={'code': 'TEST-001'})
+    assert existing.json()['id'] == pasted.json()['id']
+    custom = LINK.replace('example.mp4', '%E6%B5%8B%E8%AF%95.mp4').replace('0123456789abcdef0123456789abcdef', 'a'*32)
+    result = c.post('/api/me/tasks', json={'link': custom})
+    assert result.status_code == 202
+    assert result.json()['title'] == '测试.mp4'
+    assert result.json()['resource'].startswith('ED2K-')
+    assert len(c.get('/api/me/tasks').json()) == 2
+
+
+@pytest.mark.parametrize('payload', [{}, {'code':'TEST-001','link':LINK}, {'link':'https://example.com/video'}, {'link':LINK+'\n'+LINK}, {'link':LINK[:-1]}])
+def test_invalid_pasted_link_never_submits(env, payload):
+    app, c, fake = env
+    login(c); bind(c)
+    assert c.post('/api/me/tasks', json=payload).status_code == 422
+    assert c.get('/api/me/tasks').json() == []
+    assert not fake.calls
