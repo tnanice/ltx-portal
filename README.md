@@ -82,7 +82,7 @@ docker compose -f compose.yaml -f compose.tls.yaml up -d
 
 ## 升级
 
-先做一次一致性备份（见下文），然后把 `.env` 中的 `LTX_TAG` 改为新版本号：
+先做一次一致性备份（见下文），然后按需设置 `.env` 中的 `LTX_TAG`：默认 `latest` 跟随最新构建；想固定版本时改成具体 tag（如 `1.1.0`）：
 
 ```sh
 docker compose pull
@@ -103,7 +103,7 @@ docker compose up -d
 同架构且目标无法联网拉取镜像时，先把镜像一起搬走：
 
 ```sh
-docker save ghcr.io/tnanice/ltx-portal:1.0.0 -o ltx-portal-image.tar
+docker save ghcr.io/tnanice/ltx-portal:latest -o ltx-portal-image.tar
 # 目标机器
 docker load -i ltx-portal-image.tar
 docker compose up -d

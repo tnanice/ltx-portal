@@ -7,7 +7,7 @@
 #   docker compose -f compose.yaml -f compose.build.yaml up -d --build
 services:
   app:
-    image: ghcr.io/tnanice/ltx-portal:${LTX_TAG:-1.0.0}
+    image: ghcr.io/tnanice/ltx-portal:${LTX_TAG:-latest}
     init: true
     restart: unless-stopped
     ports:
