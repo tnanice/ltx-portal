@@ -14,6 +14,16 @@ class UpstreamError(Exception):
         self.kind, self.message, self.code = kind, message, code
 
 
+def make_qr_png(text):
+    """本地生成二维码 PNG（115 官方取图接口已坏，返回的图丢 uid）"""
+    import io
+    import qrcode
+    img = qrcode.make(text)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def checked(r):
     if not isinstance(r, dict):
         raise UpstreamError('temporary', '115返回格式异常')
@@ -103,7 +113,13 @@ class Provider:
         token = raw.get('data') or {}
         if not all(token.get(k) for k in ('uid', 'time', 'sign')):
             raise UpstreamError('temporary', '二维码接口返回不完整')
-        png = await self.call(P115Client.login_qrcode, token['uid'], app=app)
+        # 115 官方取图接口 2026-11 起返回残缺二维码（只编码前缀丢 uid，App 报参数错误），
+        # 改用 token 里的完整链接本地生成。
+        qr_url = token.get('qrcode') or ('https://115.com/scan/dg-' + token['uid'])
+        try:
+            png = make_qr_png(qr_url)
+        except Exception:
+            png = await self.call(P115Client.login_qrcode, token['uid'], app=app)
         if not isinstance(png, bytes) or not png.startswith(b'\x89PNG'):
             raise UpstreamError('temporary', '二维码图片异常')
         return token, 'data:image/png;base64,' + base64.b64encode(png).decode()

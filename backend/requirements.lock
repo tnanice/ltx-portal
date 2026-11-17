@@ -35,6 +35,7 @@ p115client==0.0.9.7.2
 p115oss==0.1.2
 p115pickcode==0.0.5.4
 packaging==26.3
+pillow==13.0.0
 pluggy==1.7.0
 posixpatht==0.0.4
 propcache==0.5.4

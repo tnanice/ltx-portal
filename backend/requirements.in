@@ -6,3 +6,4 @@ argon2-cffi==25.1.0
 p115client==0.0.9.7.2
 pytest==8.3.5
 pytest-asyncio==0.26.0
+qrcode[pil]==8.2
