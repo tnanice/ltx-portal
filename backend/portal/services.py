@@ -225,7 +225,12 @@ class Services:
             if cached and cached[1] > time.time():
                 return cached[0]
             target, expires = await self.provider.direct(self.cookie(b), ticket['pickcode'], ua)
-            ttl = min(now + 60, expires - 30) if expires else now  # unknown expiry: do not cache
+            if expires:
+                # 115 直链实测寿命约 5 天（query 参数 t=），缓存 6 小时、留 60 秒余量；
+                # 播放器 seek/重开会重打本接口，长缓存避免每次都实时调 115 API。
+                ttl = min(now + 6 * 3600, expires - 60)
+            else:
+                ttl = now  # unknown expiry: do not cache
             self.cache[key] = (target, ttl)
             if len(self.cache) > 1024:
                 self.cache.popitem(last=False)
