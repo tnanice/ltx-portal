@@ -29,14 +29,26 @@ class Catalog:
         self.db, self.config = db, config
         self.job = None
         self.lock = asyncio.Lock()
+        self._trigger = 'interval'
         state = db.setting('sync')
         state['running'] = False
         db.set('sync', state)
 
-    def start(self):
+    def start(self, trigger='interval'):
         if not self.job or self.job.done():
+            self._trigger = trigger
             self.job = asyncio.create_task(self.sync())
         return self.job
+
+    def _log(self, trigger, ok, count, error='', detail='', duration_ms=0):
+        """同步历史落库（保留最近200条）；日志失败不影响同步主流程。"""
+        try:
+            with self.db.connect() as c:
+                c.execute('INSERT INTO sync_log(ts,trigger,ok,count,error,detail,duration_ms) VALUES(?,?,?,?,?,?,?)',
+                          (time.time(), trigger, int(ok), count, str(error)[:300], detail, int(duration_ms)))
+                c.execute('DELETE FROM sync_log WHERE id NOT IN (SELECT id FROM sync_log ORDER BY id DESC LIMIT 200)')
+        except Exception:
+            pass
 
     def data(self):
         row = self.db.one('SELECT payload FROM catalog WHERE id=1')
@@ -68,6 +80,7 @@ class Catalog:
 
     async def sync(self):
         async with self.lock:
+            trigger, t0 = self._trigger, time.time()
             state = self.db.setting('sync')
             state.update(running=True, last_attempt=time.time())
             self.db.set('sync', state)
@@ -89,6 +102,8 @@ class Catalog:
                                   (json.dumps(payload, ensure_ascii=False),))
                     c.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps(state), 'sync'))
                 self.db.set('source_status', {'ok': True, 'checked': now, 'error': ''})
+                self._log(trigger, True, len(payload['items']) if payload is not None else state.get('count'),
+                          detail='' if payload is not None else '304', duration_ms=(time.time() - t0) * 1000)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -97,6 +112,7 @@ class Catalog:
                 state.update(last_error=message, running=False, next_sync=time.time() + state['interval_seconds'])
                 self.db.set('sync', state)
                 self.db.set('source_status', {'ok': False, 'checked': time.time(), 'error': message})
+                self._log(trigger, False, None, error=message, duration_ms=(time.time() - t0) * 1000)
             finally:
                 state = self.db.setting('sync')
                 state['running'] = False

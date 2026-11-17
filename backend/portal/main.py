@@ -226,10 +226,15 @@ def create_app(config=None, provider=None):
         return state
 
     @app.post('/api/admin/sync-now', status_code=202)
-    async def sync_now(u=Depends(admin)):
+    async def sync_now(request: Request, u=Depends(admin)):
         limit.check(('sync', u['id']), 6)
-        catalog.start()
+        catalog.start('relay' if request.headers.get('x-relay-hook') else 'manual')
         return {'ok': True, 'running': True}
+
+    @app.get('/api/admin/sync-log')
+    async def sync_log(u=Depends(admin)):
+        rows = db.all('SELECT id,ts,trigger,ok,count,error,detail,duration_ms FROM sync_log ORDER BY id DESC LIMIT 50')
+        return {'items': rows}
 
     @app.get('/api/me/favorites')
     async def favorites(u=Depends(user)):
