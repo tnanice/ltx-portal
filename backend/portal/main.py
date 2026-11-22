@@ -376,6 +376,28 @@ def create_app(config=None, provider=None):
         return [task_view(t) for t in db.all('SELECT t.* FROM tasks t JOIN bindings b ON t.user_id=b.user_id AND t.revision=b.revision '
                                             'WHERE t.user_id=? ORDER BY t.updated DESC LIMIT 1000', (u['id'],))]
 
+    @app.get('/api/me/library')
+    async def offline_library(u=Depends(user)):
+        rows = db.all('SELECT t.* FROM tasks t JOIN bindings b ON t.user_id=b.user_id AND t.revision=b.revision '
+                      "WHERE t.user_id=? AND t.state='completed' ORDER BY t.updated DESC LIMIT 1000", (u['id'],))
+        tasks = [task_view(row) for row in rows]
+        tasks = [task for task in tasks if task['files']]
+        if not tasks:
+            return []
+        normalize = lambda code: re.sub('[^A-Z0-9]', '', code.upper())
+        wanted = {normalize(task['resource']) for task in tasks}
+        # Join once on the server; the phone only downloads its completed movies,
+        # not the complete multi-megabyte catalog.
+        metadata = {normalize(item['code']): item for item in catalog.data().get('items', [])
+                    if normalize(item['code']) in wanted}
+        result = []
+        for task in tasks:
+            item = metadata.get(normalize(task['resource']))
+            task['metadata'] = {key: item.get(key) for key in
+                                ('title', 'title_zh', 'cover', 'actors', 'date', 'maker')} if item else None
+            result.append(task)
+        return result
+
     @app.get('/api/me/tasks/{tid}')
     async def task(tid: str, u=Depends(user)):
         return task_view(own_task(tid, u['id']))
@@ -385,14 +407,18 @@ def create_app(config=None, provider=None):
         limit.check(('submit', u['id']), 15)
         b = svc.binding(u['id'])
         if (body.code is None) == (body.link is None):
-            raise HTTPException(422, '请提供资源编号或一条完整的 e2k 链接')
+            raise HTTPException(422, '请提供资源编号、磁力或ed2k链接')
         if body.link is not None:
             link = body.link.strip()
-            if not re.fullmatch(r'ed2k://\|file\|[^|\r\n]+\|[0-9]+\|[0-9a-fA-F]{32}\|(?:[^\r\n]*)/', link):
-                raise HTTPException(422, '请粘贴一条完整的 ed2k:// 文件链接')
+            if not link.lower().startswith('magnet:?') and not re.fullmatch(r'ed2k://\|file\|[^|\r\n]+\|[0-9]+\|[0-9a-fA-F]{32}\|(?:[^\r\n]*)/', link):
+                raise HTTPException(422, '请粘贴完整的磁力或ed2k链接')
             key, info_hash = link_identity(link)
-            title = unquote(link.split('|')[2])[:1024]
-            code = 'ED2K-' + info_hash[:12].upper()
+            if link.lower().startswith('magnet:?'):
+                title = (parse_qs(urlsplit(link).query).get('dn') or ['磁力任务 ' + info_hash[:12]])[0][:1024]
+                code = 'BTIH-' + info_hash[:12].upper()
+            else:
+                title = unquote(link.split('|')[2])[:1024]
+                code = 'ED2K-' + info_hash[:12].upper()
             # Preserve catalog association when the pasted link already belongs to it.
             for item in catalog.data()['items']:
                 if any(candidate.strip() == link for candidate in item['links']):
@@ -489,6 +515,18 @@ def create_app(config=None, provider=None):
         if not row:
             raise HTTPException(410, '播放地址已失效，请回到站点重新准备播放')
         return row
+
+    @app.post('/api/playback/client-source')
+    async def client_source(body: TicketInput, u=Depends(user)):
+        limit.check(('client-source', u['id']), 30)
+        row = own_task(body.task_id, u['id'])
+        if row['state'] not in ('completed', 'missing') or not any(f['pickcode'] == body.pickcode for f in json.loads(row['files'])):
+            raise HTTPException(404, '任务中没有此视频')
+        b = svc.binding(u['id'])
+        # Native client resolves against 115 itself. No upstream call or playback ticket.
+        return JSONResponse({'mode': 'cookie', 'cookie': svc.cookie(b), 'revision': b['revision'],
+                             'account_id': b['account_id'], 'pickcode': body.pickcode},
+                            headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
     @app.post('/api/playback/tickets')
     async def prepare(body: TicketInput, request: Request, u=Depends(user)):
