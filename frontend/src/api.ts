@@ -14,5 +14,5 @@ export const time=(value:number|null|undefined)=>value?new Date(value*1000).toLo
 export const safeURL=(url:string|undefined)=>url && /^https?:\/\//i.test(url)?url:undefined
 export interface Item {code:string;title:string;title_zh?:string;actors:string[];maker?:string;date?:string;cover?:string;shot?:string;url?:string;score?:number;links:string[];pending?:boolean;added_at?:number;genres?:string[]}
 export interface Media {pickcode:string;name:string;size:number}
-export interface Task {id:string;resource:string;title:string;state:string;percent:number;error:string;created:number;updated:number;files:Media[]}
+export interface Task {id:string;resource:string;title:string;state:string;percent:number;download_rate?:number|null;stalled_seconds?:number;telemetry_stale?:boolean;error:string;created:number;updated:number;files:Media[]}
 export const stateNames:Record<string,string>={submitting:'提交中',unknown:'结果待确认',downloading:'离线下载中',completed:'可播放',failed:'失败',missing:'文件失效',cancelled:'已取消'}

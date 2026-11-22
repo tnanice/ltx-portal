@@ -49,6 +49,10 @@ class DB:
             if version > 1:
                 raise RuntimeError('Database is newer than this application; restore a matching image.')
             c.executescript(SCHEMA)
+            columns = {r['name'] for r in c.execute('PRAGMA table_info(tasks)')}
+            for name in ('download_rate', 'last_progress_at', 'speed_checked_at'):
+                if name not in columns:
+                    c.execute(f'ALTER TABLE tasks ADD COLUMN {name} REAL NOT NULL DEFAULT 0')
             columns = {r['name'] for r in c.execute('PRAGMA table_info(bindings)')}
             # One-way removal of retired Open authorization. Cookie bindings keep their revision/tasks.
             if 'open_tokens' in columns:

@@ -255,8 +255,11 @@ def create_app(config=None, provider=None):
 
     @app.get('/api/me/115')
     async def binding_status(u=Depends(user)):
-        b = db.one('SELECT account_id,state,checked,save_path,revision FROM bindings WHERE user_id=?', (u['id'],))
-        return b or {'state': 'unbound', 'account_id': None, 'checked': None, 'save_path': '', 'revision': 0}
+        b = db.one('SELECT account_id,state,checked,save_path,revision,cookie IS NOT NULL AS cookie_bound FROM bindings WHERE user_id=?', (u['id'],))
+        if b:
+            b['cookie_bound'] = bool(b['cookie_bound'])
+            b['mode'] = 'cookie'
+        return b or {'state': 'unbound', 'account_id': None, 'checked': None, 'save_path': '', 'revision': 0, 'mode': 'cookie', 'cookie_bound': False}
 
     @app.post('/api/me/115/check')
     async def check_binding(u=Depends(user)):

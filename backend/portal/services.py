@@ -140,6 +140,8 @@ class Services:
     def task_update(self, task, **values):
         if not self.current(task['user_id'], task['revision']):
             return
+        if values.get('state') == 'submitting':
+            values.update(download_rate=0, last_progress_at=0, speed_checked_at=0)
         values['updated'] = time.time()
         self.db.run('UPDATE tasks SET ' + ','.join(f'{k}=?' for k in values) + ' WHERE id=?',
                     (*values.values(), task['id']))
@@ -158,10 +160,11 @@ class Services:
                     return
                 b = self.binding(task['user_id'])
                 cookie = self.cookie(b)
+                provider = self.provider_for(b)
                 try:
                     if task['state'] == 'submitting':
                         try:
-                            result = await self.provider.submit(cookie, task['link'], b['save_path'])
+                            result = await provider.submit(cookie, task['link'], b['save_path'])
                             self.task_update(task, state='downloading', info_hash=result['info_hash'], error='', next_check=0)
                         except UpstreamError as e:
                             if e.kind == 'temporary':
@@ -174,22 +177,34 @@ class Services:
                             return
                         hint = result.get('task') or {}
                         if hint.get('pick_code') or hint.get('pickcode'):
-                            files = await self.provider.files(cookie, hint)
+                            files = await provider.files(cookie, hint)
                             self.task_update(task, state='completed', files=json.dumps(files, ensure_ascii=False), percent=100, error='')
                             return
                     if task['state'] not in ('unknown', 'downloading'):
                         return
                     page = task['scan_page']
                     for _ in range(3):
-                        rows, total = await self.provider.task_page(cookie, page)
+                        rows, total = await provider.task_page(cookie, page)
                         found = next((t for t in rows if str(t.get('info_hash', '')).lower() == task['info_hash']), None)
                         if found:
                             status = int(found.get('status', 0))
                             percent = min(100, max(0, float(found.get('percentDone') or 0)))
+                            now = time.time()
+                            try:
+                                rate = float(found.get('rateDownload') or 0)
+                                rate = rate if 0 <= rate < float('inf') else 0
+                            except (TypeError, ValueError):
+                                rate = 0
+                            # Start at first observation, never infer historical stalls.
+                            last_progress = task['last_progress_at'] or now
+                            if percent != task['percent']:
+                                last_progress = now
+                            self.task_update(task, download_rate=rate,
+                                             last_progress_at=last_progress, speed_checked_at=now)
                             if status < 0:
                                 self.task_update(task, state='failed', error='115离线任务失败，请在115中查看原因', percent=percent)
                             elif status == 2 or percent >= 100:
-                                files = await self.provider.files(cookie, found)
+                                files = await provider.files(cookie, found)
                                 self.task_update(task, state='completed', files=json.dumps(files, ensure_ascii=False), percent=100, error='')
                             else:
                                 self.task_update(task, state='downloading', percent=percent, error='', scan_page=1, next_check=time.time()+self.check_delay(task))
