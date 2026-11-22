@@ -1,11 +1,13 @@
 import asyncio
+import gzip
+import hashlib
 import json
 import re
 import secrets
 import sqlite3
 import time
 from contextlib import asynccontextmanager
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, parse_qs, urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -126,7 +128,9 @@ def create_app(config=None, provider=None):
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' https: http: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
-        if request.url.path.startswith(('/api/', '/play/')):
+        if request.url.path == '/api/catalog/items' and response.status_code in (200, 304):
+            response.headers['Cache-Control'] = 'private, no-cache'
+        elif request.url.path.startswith(('/api/', '/play/')):
             response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -211,9 +215,31 @@ def create_app(config=None, provider=None):
             svc.revoke(uid)
         return {'ok': True}
 
+    catalog_response = {}
+
     @app.get('/api/catalog/items')
-    async def items(u=Depends(user)):
-        return catalog.data()
+    async def items(request: Request, u=Depends(user)):
+        # Authenticate even for unchanged snapshots; never cache credentials.
+        row = db.one('SELECT payload FROM catalog WHERE id=1')
+        raw = row['payload'] if row else '{"items":[]}'
+        if catalog_response.get('raw') != raw:
+            body = raw.encode('utf-8')
+            catalog_response.update(raw=raw, body=body,
+                                    etag='W/"' + hashlib.sha256(body).hexdigest() + '"',
+                                    gzip=gzip.compress(body, compresslevel=5, mtime=0))
+        etag = catalog_response['etag']
+        headers = {'ETag': etag, 'Cache-Control': 'private, no-cache', 'Vary': 'Accept-Encoding'}
+        tags = request.headers.get('if-none-match', '').split(',')
+        if any(tag.strip().removeprefix('W/') in (etag.removeprefix('W/'), '*') for tag in tags):
+            return Response(status_code=304, headers=headers)
+        encodings = request.headers.get('accept-encoding', '').lower().split(',')
+        accepts_gzip = any(part.strip().split(';')[0] == 'gzip' and not
+                           any(p.strip() in ('q=0', 'q=0.0', 'q=0.00', 'q=0.000') for p in part.split(';')[1:])
+                           for part in encodings)
+        if accepts_gzip:
+            headers['Content-Encoding'] = 'gzip'
+        return Response(catalog_response['gzip' if accepts_gzip else 'body'],
+                        media_type='application/json', headers=headers)
 
     @app.get('/api/catalog/status')
     async def status(u=Depends(user)):
