@@ -67,6 +67,11 @@ class TicketInput(BaseModel):
     pickcode: str = Field(min_length=1, max_length=128)
 
 
+class ClientSourceInput(TicketInput):
+    include_cookie: bool = False
+    revision: int | None = None
+
+
 class SavePath(BaseModel):
     save_path: str = Field(default='', pattern=r'^\d{0,30}$')
 
@@ -517,16 +522,19 @@ def create_app(config=None, provider=None):
         return row
 
     @app.post('/api/playback/client-source')
-    async def client_source(body: TicketInput, u=Depends(user)):
+    async def client_source(body: ClientSourceInput, u=Depends(user)):
         limit.check(('client-source', u['id']), 30)
         row = own_task(body.task_id, u['id'])
         if row['state'] not in ('completed', 'missing') or not any(f['pickcode'] == body.pickcode for f in json.loads(row['files'])):
             raise HTTPException(404, '任务中没有此视频')
         b = svc.binding(u['id'])
-        # Native client resolves against 115 itself. No upstream call or playback ticket.
-        return JSONResponse({'mode': 'cookie', 'cookie': svc.cookie(b), 'revision': b['revision'],
-                             'account_id': b['account_id'], 'pickcode': body.pickcode},
-                            headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
+        # Metadata checks never decrypt or transmit the upstream credential.
+        result = {'mode': 'cookie', 'revision': b['revision'], 'account_id': b['account_id'], 'pickcode': body.pickcode}
+        if body.include_cookie:
+            if body.revision != b['revision']:
+                raise HTTPException(409, '绑定版本已变化，请重新准备播放')
+            result['cookie'] = svc.cookie(b)
+        return JSONResponse(result, headers={'Cache-Control': 'no-store', 'Pragma': 'no-cache'})
 
     @app.post('/api/playback/tickets')
     async def prepare(body: TicketInput, request: Request, u=Depends(user)):
