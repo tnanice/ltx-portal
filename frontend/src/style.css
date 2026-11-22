@@ -63,3 +63,5 @@
 .sync-log li.fail{border-color:#7a3a44}
 .sync-log li.fail .result{color:#ff9a9f}
 .sync-log li .err{width:100%;color:#ff9a9f;overflow-wrap:anywhere;line-height:1.5}
+
+.download-telemetry{margin:6px 0;overflow-wrap:anywhere}.task-info .stall-hint{color:#e8bd76;font-size:12px;line-height:1.6;white-space:normal}.stall-hint button{margin-left:8px;color:inherit;text-decoration:underline;background:transparent;border:0;padding:2px 4px}.stall-hint span{display:block}
