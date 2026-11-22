@@ -49,6 +49,14 @@ class DB:
             if version > 1:
                 raise RuntimeError('Database is newer than this application; restore a matching image.')
             c.executescript(SCHEMA)
+            columns = {r['name'] for r in c.execute('PRAGMA table_info(bindings)')}
+            # One-way removal of retired Open authorization. Cookie bindings keep their revision/tasks.
+            if 'open_tokens' in columns:
+                c.execute("DELETE FROM tickets WHERE user_id IN (SELECT user_id FROM bindings WHERE open_tokens IS NOT NULL)")
+                c.execute("UPDATE bindings SET state='unbound',account_id=NULL,revision=revision+1 WHERE cookie IS NULL AND open_tokens IS NOT NULL")
+            for name in ('open_tokens', 'open_app_id', 'mode'):
+                if name in columns:
+                    c.execute(f'ALTER TABLE bindings DROP COLUMN {name}')
         self.path.chmod(0o600)
         if self.setting('sync') is None:
             self.set('sync', {'enabled': True, 'interval_seconds': 3600, 'next_sync': 0,

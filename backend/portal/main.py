@@ -51,6 +51,7 @@ class CookieInput(BaseModel):
 
 class QRInput(BaseModel):
     app: str = 'os_windows'
+    mode: str = 'cookie'
 
 
 class TaskInput(BaseModel):
@@ -286,6 +287,8 @@ def create_app(config=None, provider=None):
     @app.post('/api/me/115/qrcode')
     async def new_qr(body: QRInput, u=Depends(user)):
         limit.check(('qr', u['id']), 4)
+        if body.mode != 'cookie':
+            raise HTTPException(422, '不支持的115模式')
         if body.app not in ('os_windows', 'os_mac', 'os_linux', 'web', 'alipaymini'):
             raise HTTPException(422, '不支持的设备类型')
         for qr in svc.qrs.values():
@@ -324,7 +327,12 @@ def create_app(config=None, provider=None):
         return {'ok': True}
 
     def task_view(row):
+        checked = row['speed_checked_at']
+        stale = not checked or time.time() - checked > 60
+        stalled = max(0, int(min(time.time(), checked) - row['last_progress_at'])) if row['last_progress_at'] and checked and row['state'] == 'downloading' else 0
         return {**{k: row[k] for k in ('id', 'resource', 'title', 'state', 'percent', 'error', 'created', 'updated')},
+                'download_rate': row['download_rate'] if row['state'] == 'downloading' and not stale else None,
+                'stalled_seconds': stalled, 'telemetry_stale': stale,
                 'files': json.loads(row['files'])}
 
     def own_task(tid, uid):
@@ -390,13 +398,13 @@ def create_app(config=None, provider=None):
             if row['state'] == 'missing':
                 for f in json.loads(row['files']):
                     try:
-                        await svc.provider.direct(svc.cookie(b), f['pickcode'], 'LTX-Metadata/1.0')
+                        await svc.provider_for(b).direct(svc.cookie(b), f['pickcode'], 'LTX-Metadata/1.0')
                     except UpstreamError as e:
                         if e.kind != 'missing':
                             raise
                     else:
                         raise HTTPException(409, '任务仍有可用文件，请选择其他文件播放；未清理115记录')
-                await svc.provider.remove_record(svc.cookie(b), row['info_hash'])
+                await svc.provider_for(b).remove_record(svc.cookie(b), row['info_hash'])
             svc.task_update(row, state='submitting', error='', files='[]', scan_page=1, percent=0,
                             created=time.time(), next_check=0)
         svc.spawn(svc.process_task(tid))
@@ -414,7 +422,7 @@ def create_app(config=None, provider=None):
             # A queued submission has not sent a write while we own this lock.
             if row['state'] != 'submitting':
                 b = svc.binding(u['id'])
-                await svc.provider.remove_record(svc.cookie(b), row['info_hash'])
+                await svc.provider_for(b).remove_record(svc.cookie(b), row['info_hash'])
             if not svc.current(u['id'], row['revision']):
                 raise HTTPException(409, '115绑定已变化，请刷新任务')
             svc.task_update(row, state='cancelled', error='', next_check=0)
@@ -429,7 +437,7 @@ def create_app(config=None, provider=None):
                 raise HTTPException(409, '请先取消进行中的任务')
             if row['state'] in ('completed', 'missing'):
                 b = svc.binding(u['id'])
-                await svc.provider.remove_task_files(svc.cookie(b), row['info_hash'])
+                await svc.provider_for(b).remove_task_files(svc.cookie(b), row['info_hash'])
             if not svc.current(u['id'], row['revision']):
                 raise HTTPException(409, '115绑定已变化，请刷新任务')
             with db.connect() as c:
@@ -463,7 +471,7 @@ def create_app(config=None, provider=None):
         b = svc.binding(u['id'])
         try:
             # Validation URL is not reused for players: their UA differs.
-            await svc.provider.direct(svc.cookie(b), body.pickcode, 'LTX-Metadata/1.0')
+            await svc.provider_for(b).direct(svc.cookie(b), body.pickcode, 'LTX-Metadata/1.0')
         except UpstreamError as e:
             if e.kind == 'missing':
                 svc.task_update(row, state='missing', error='文件已失效，可选择其他文件或明确重试')

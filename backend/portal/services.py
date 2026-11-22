@@ -53,6 +53,9 @@ class Services:
     def cookie(self, binding):
         return self.vault.decrypt(binding['cookie'])
 
+    def provider_for(self, binding):
+        return self.provider
+
     def revoke(self, uid):
         self.db.run('DELETE FROM tickets WHERE user_id=?', (uid,))
         for key in list(self.cache):
@@ -76,20 +79,21 @@ class Services:
                     raise HTTPException(401, '登录已失效，请重新登录')
                 if not u or u['disabled'] or (expected_revision is not None and rev != expected_revision):
                     raise HTTPException(409, '绑定状态已变化，请重新开始')
+                next_revision = rev + 1
                 c.execute('INSERT INTO bindings(user_id,revision,account_id,cookie,state,checked) VALUES(?,?,?,?,?,?) '
                           'ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,account_id=excluded.account_id,'
                           'cookie=excluded.cookie,state=excluded.state,checked=excluded.checked,save_path=\'\'',
-                          (uid, rev + 1, account, self.vault.encrypt(cookie), 'ok', time.time()))
+                          (uid, next_revision, account, self.vault.encrypt(cookie), 'ok', time.time()))
                 c.execute('DELETE FROM tickets WHERE user_id=?', (uid,))
             for key in list(self.cache):
                 if key[0] == uid:
                     self.cache.pop(key, None)
-            return {'state': 'ok', 'account_id': account, 'revision': rev + 1}
+            return {'state': 'ok', 'account_id': account, 'revision': next_revision}
 
     async def check_binding(self, uid):
         b = self.binding(uid)
         try:
-            await self.provider.verify(self.cookie(b))
+            await self.provider_for(b).verify(self.cookie(b))
             state = 'ok'
         except UpstreamError as e:
             state = 'invalid' if e.kind == 'invalid' else 'unreachable'
@@ -109,11 +113,11 @@ class Services:
                         return
                     if status == 2:
                         qr['state'] = 'verifying'
-                        cookie = await self.provider.qr_result(qr['token'], qr['app'])
+                        credential = await self.provider.qr_result(qr['token'], qr['app'])
                         if time.time() >= qr['expires']:
                             qr['state'] = 'expired'
                             return
-                        await self.bind(qr['user_id'], cookie, expected_revision=qr['revision'], expected_session=qr['session_token'])
+                        await self.bind(qr['user_id'], credential, expected_revision=qr['revision'], expected_session=qr['session_token'])
                         qr['state'] = 'success'
                         return
                     qr['state'] = 'scanned' if status == 1 else 'waiting'
@@ -212,6 +216,7 @@ class Services:
             self.active_tasks.discard(task_id)
 
     async def direct(self, ticket, ua):
+        selected = self.binding(ticket['user_id'])
         key = (ticket['user_id'], ticket['revision'], ticket['pickcode'], ua)
         now = time.time()
         cached = self.cache.get(key)
@@ -224,7 +229,7 @@ class Services:
             cached = self.cache.get(key)
             if cached and cached[1] > time.time():
                 return cached[0]
-            target, expires = await self.provider.direct(self.cookie(b), ticket['pickcode'], ua)
+            target, expires = await self.provider_for(b).direct(self.cookie(b), ticket['pickcode'], ua)
             if expires:
                 # 115 直链实测寿命约 5 天（query 参数 t=），缓存 6 小时、留 60 秒余量；
                 # 播放器 seek/重开会重打本接口，长缓存避免每次都实时调 115 API。
