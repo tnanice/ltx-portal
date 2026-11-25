@@ -1,8 +1,17 @@
 import asyncio
+import gzip
+import hashlib
 import json
+import re
 import time
 
 import httpx
+
+_UNSET = object()
+
+
+def normalize_code(code):
+    return re.sub('[^A-Z0-9]', '', code.upper())
 
 
 def validate_catalog(payload):
@@ -30,6 +39,13 @@ class Catalog:
         self.job = None
         self.lock = asyncio.Lock()
         self._trigger = 'interval'
+        self._ver = _UNSET
+        self._raw = '{"items":[]}'
+        self._data = {'items': []}
+        self._by_code = {}
+        self._by_norm_code = {}
+        self._by_link = {}
+        self._http_cache = None
         state = db.setting('sync')
         state['running'] = False
         db.set('sync', state)
@@ -50,9 +66,63 @@ class Catalog:
         except Exception:
             pass
 
-    def data(self):
+    def _refresh(self):
+        ver_row = self.db.one("SELECT value FROM settings WHERE key='catalog_ver'")
+        ver = ver_row['value'] if ver_row else None
+        if self._ver is not _UNSET and ver == self._ver:
+            return
         row = self.db.one('SELECT payload FROM catalog WHERE id=1')
-        return json.loads(row['payload']) if row else {'items': []}
+        raw = row['payload'] if row else '{"items":[]}'
+        data = json.loads(raw) if row else {'items': []}
+        items = data.get('items', [])
+        by_code = {}
+        by_norm = {}
+        by_link = {}
+        for item in items:
+            code = item.get('code')
+            if code:
+                by_code[code] = item
+                by_norm[normalize_code(code)] = item
+            for candidate in item.get('links') or ():
+                cleaned = candidate.strip()
+                if cleaned and cleaned not in by_link:
+                    by_link[cleaned] = item
+        self._ver = ver
+        self._raw = raw
+        self._data = data
+        self._by_code = by_code
+        self._by_norm_code = by_norm
+        self._by_link = by_link
+        self._http_cache = None
+
+    def data(self):
+        self._refresh()
+        return self._data
+
+    def by_code(self, code):
+        self._refresh()
+        return self._by_code.get(code)
+
+    def by_normalized_code(self, code):
+        self._refresh()
+        return self._by_norm_code.get(normalize_code(code))
+
+    def by_link(self, link):
+        self._refresh()
+        return self._by_link.get(link.strip())
+
+    async def http_payload(self):
+        self._refresh()
+        if self._http_cache is None:
+            raw = self._raw
+            body = raw.encode('utf-8')
+            etag = 'W/"' + hashlib.sha256(body).hexdigest() + '"'
+            gz = await asyncio.to_thread(gzip.compress, body, 5, mtime=0)
+            if self._raw == raw:
+                self._http_cache = (etag, body, gz)
+            else:
+                return etag, body, gz
+        return self._http_cache
 
     async def fetch(self, conditional=True):
         state = self.db.setting('sync')
@@ -122,7 +192,14 @@ class Catalog:
         if self.job and not self.job.done():
             return
         try:
-            await self.fetch()
+            headers = {'User-Agent': 'LTX-Portal/1.0'}
+            async with asyncio.timeout(15):
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5), follow_redirects=True) as client:
+                    response = await client.head(self.config.source, headers=headers)
+            if response.status_code in (405, 501):
+                await self.fetch()
+            else:
+                response.raise_for_status()
             result = {'ok': True, 'checked': time.time(), 'error': ''}
         except asyncio.CancelledError:
             raise

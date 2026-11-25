@@ -2,6 +2,7 @@ import asyncio
 import json
 import secrets
 import time
+import weakref
 from collections import OrderedDict
 
 from fastapi import HTTPException
@@ -17,7 +18,7 @@ class Services:
         self.active_tasks = set()
         self.cache = OrderedDict()
         self.locks = {}
-        self.task_locks = {}
+        self.task_locks = weakref.WeakValueDictionary()
         self.direct_locks = [asyncio.Lock() for _ in range(32)]
         self.next_probe = 0
         # A stopped process may have sent the write. Reconcile, never blindly send again.
@@ -33,7 +34,11 @@ class Services:
         return self.locks.setdefault(user_id, asyncio.Lock())
 
     def task_lock(self, task_id):
-        return self.task_locks.setdefault(task_id, asyncio.Lock())
+        lock = self.task_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.task_locks[task_id] = lock
+        return lock
 
     @staticmethod
     def check_delay(task):
@@ -56,7 +61,17 @@ class Services:
     def provider_for(self, binding):
         return self.provider
 
+    def _drop_provider_client(self, encrypted_cookie):
+        if encrypted_cookie and hasattr(self.provider, 'drop_client'):
+            try:
+                self.provider.drop_client(self.vault.decrypt(encrypted_cookie))
+            except Exception:
+                pass
+
     def revoke(self, uid):
+        old = self.db.one('SELECT cookie FROM bindings WHERE user_id=?', (uid,))
+        if old:
+            self._drop_provider_client(old['cookie'])
         self.db.run('DELETE FROM tickets WHERE user_id=?', (uid,))
         for key in list(self.cache):
             if key[0] == uid:
@@ -88,6 +103,8 @@ class Services:
             for key in list(self.cache):
                 if key[0] == uid:
                     self.cache.pop(key, None)
+            if old and old['cookie']:
+                self._drop_provider_client(old['cookie'])
             return {'state': 'ok', 'account_id': account, 'revision': next_revision}
 
     async def check_binding(self, uid):
@@ -236,6 +253,7 @@ class Services:
         now = time.time()
         cached = self.cache.get(key)
         if cached and cached[1] > now:
+            self.cache.move_to_end(key)
             return cached[0]
         async with self.direct_locks[hash(key) % len(self.direct_locks)]:
             b = self.binding(ticket['user_id'])
@@ -243,6 +261,7 @@ class Services:
                 raise HTTPException(410, '播放凭证已失效')
             cached = self.cache.get(key)
             if cached and cached[1] > time.time():
+                self.cache.move_to_end(key)
                 return cached[0]
             target, expires = await self.provider_for(b).direct(self.cookie(b), ticket['pickcode'], ua)
             if expires:

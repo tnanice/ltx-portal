@@ -12,6 +12,9 @@ class Config:
     public_url: str = field(default_factory=lambda: os.getenv('PUBLIC_URL', '').rstrip('/'))
     secure_cookie: bool = field(default_factory=lambda: os.getenv('COOKIE_SECURE', 'false').lower() == 'true')
     allowed_hosts: list[str] = field(default_factory=lambda: os.getenv('ALLOWED_HOSTS', '*').split(','))
+    trusted_proxies: set[str] = field(
+        default_factory=lambda: {h.strip() for h in os.getenv('TRUSTED_PROXY_IPS', '').split(',') if h.strip()}
+    )
     static: Path = field(default_factory=lambda: Path(os.getenv('STATIC_DIR', '/app/static')))
     background: bool = True
     session_ttl: int = 7 * 86400

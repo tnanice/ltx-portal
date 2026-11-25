@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS sync_log (
 CREATE INDEX IF NOT EXISTS sync_log_ts ON sync_log(ts);
 CREATE INDEX IF NOT EXISTS task_owner ON tasks(user_id,revision,updated);
 CREATE INDEX IF NOT EXISTS session_expiry ON sessions(expires);
+CREATE TRIGGER IF NOT EXISTS catalog_ver_insert AFTER INSERT ON catalog BEGIN
+ INSERT INTO settings(key,value) VALUES('catalog_ver','1')
+ ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT);
+END;
+CREATE TRIGGER IF NOT EXISTS catalog_ver_update AFTER UPDATE ON catalog BEGIN
+ INSERT INTO settings(key,value) VALUES('catalog_ver','1')
+ ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT);
+END;
 PRAGMA user_version=1;
 '''
 
@@ -45,6 +53,7 @@ class DB:
         data.mkdir(parents=True, exist_ok=True)
         self.path = data / 'portal.sqlite3'
         with self.connect() as c:
+            c.execute('PRAGMA journal_mode=WAL')
             version = c.execute('PRAGMA user_version').fetchone()[0]
             if version > 1:
                 raise RuntimeError('Database is newer than this application; restore a matching image.')
@@ -72,7 +81,6 @@ class DB:
         c = sqlite3.connect(self.path, timeout=5)
         c.row_factory = sqlite3.Row
         c.execute('PRAGMA foreign_keys=ON')
-        c.execute('PRAGMA journal_mode=WAL')
         try:
             yield c
             c.commit()

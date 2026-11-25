@@ -1,6 +1,4 @@
 import asyncio
-import gzip
-import hashlib
 import json
 import re
 import secrets
@@ -149,9 +147,23 @@ def create_app(config=None, provider=None):
         db.one('SELECT 1')
         return {'ok': True, 'version': '1.0.0'}
 
+    def client_ip(request: Request):
+        host = request.client.host if request.client else '?'
+        if host in cfg.trusted_proxies:
+            real = request.headers.get('x-real-ip', '').strip()
+            if real:
+                return real
+            xff = [p.strip() for p in request.headers.get('x-forwarded-for', '').split(',') if p.strip()]
+            for ip in reversed(xff):
+                if ip not in cfg.trusted_proxies:
+                    return ip
+        return host
+
     @app.post('/api/auth/login')
     async def login(body: Login, request: Request, response: Response):
-        limit.check(('login', request.client.host if request.client else '?'), 10, 300)
+        ip = client_ip(request)
+        limit.check(('login', ip, body.username.lower()), 10, 300)
+        limit.check(('login-ip', ip), 60, 300)
         u = db.one('SELECT * FROM users WHERE username=?', (body.username,))
         valid = await asyncio.to_thread(password_ok, u['password'] if u else DUMMY_HASH, body.password)
         latest = db.one('SELECT * FROM users WHERE username=?', (body.username,))
@@ -220,19 +232,10 @@ def create_app(config=None, provider=None):
             svc.revoke(uid)
         return {'ok': True}
 
-    catalog_response = {}
-
     @app.get('/api/catalog/items')
     async def items(request: Request, u=Depends(user)):
         # Authenticate even for unchanged snapshots; never cache credentials.
-        row = db.one('SELECT payload FROM catalog WHERE id=1')
-        raw = row['payload'] if row else '{"items":[]}'
-        if catalog_response.get('raw') != raw:
-            body = raw.encode('utf-8')
-            catalog_response.update(raw=raw, body=body,
-                                    etag='W/"' + hashlib.sha256(body).hexdigest() + '"',
-                                    gzip=gzip.compress(body, compresslevel=5, mtime=0))
-        etag = catalog_response['etag']
+        etag, body, gz = await catalog.http_payload()
         headers = {'ETag': etag, 'Cache-Control': 'private, no-cache', 'Vary': 'Accept-Encoding'}
         tags = request.headers.get('if-none-match', '').split(',')
         if any(tag.strip().removeprefix('W/') in (etag.removeprefix('W/'), '*') for tag in tags):
@@ -243,7 +246,7 @@ def create_app(config=None, provider=None):
                            for part in encodings)
         if accepts_gzip:
             headers['Content-Encoding'] = 'gzip'
-        return Response(catalog_response['gzip' if accepts_gzip else 'body'],
+        return Response(gz if accepts_gzip else body,
                         media_type='application/json', headers=headers)
 
     @app.get('/api/catalog/status')
@@ -274,7 +277,7 @@ def create_app(config=None, provider=None):
 
     @app.put('/api/me/favorites/{code}')
     async def add_favorite(code: str, u=Depends(user)):
-        if len(code) > 128 or not any(r['code'] == code for r in catalog.data()['items']):
+        if len(code) > 128 or not catalog.by_code(code):
             raise HTTPException(404, '资源不存在')
         db.run('INSERT OR IGNORE INTO favorites VALUES(?,?)', (u['id'], code))
         return {'ok': True}
@@ -389,15 +392,9 @@ def create_app(config=None, provider=None):
         tasks = [task for task in tasks if task['files']]
         if not tasks:
             return []
-        normalize = lambda code: re.sub('[^A-Z0-9]', '', code.upper())
-        wanted = {normalize(task['resource']) for task in tasks}
-        # Join once on the server; the phone only downloads its completed movies,
-        # not the complete multi-megabyte catalog.
-        metadata = {normalize(item['code']): item for item in catalog.data().get('items', [])
-                    if normalize(item['code']) in wanted}
         result = []
         for task in tasks:
-            item = metadata.get(normalize(task['resource']))
+            item = catalog.by_normalized_code(task['resource'])
             task['metadata'] = {key: item.get(key) for key in
                                 ('title', 'title_zh', 'cover', 'actors', 'date', 'maker')} if item else None
             result.append(task)
@@ -425,13 +422,12 @@ def create_app(config=None, provider=None):
                 title = unquote(link.split('|')[2])[:1024]
                 code = 'ED2K-' + info_hash[:12].upper()
             # Preserve catalog association when the pasted link already belongs to it.
-            for item in catalog.data()['items']:
-                if any(candidate.strip() == link for candidate in item['links']):
-                    code = item['code']
-                    title = item.get('title_zh') or item.get('title') or code
-                    break
+            matched = catalog.by_link(link)
+            if matched:
+                code = matched['code']
+                title = matched.get('title_zh') or matched.get('title') or code
         else:
-            resource = next((r for r in catalog.data()['items'] if r['code'] == body.code), None)
+            resource = catalog.by_code(body.code)
             if not resource or body.link_index >= len(resource['links']):
                 raise HTTPException(404, '资源链接不存在')
             link = resource['links'][body.link_index]

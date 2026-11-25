@@ -2,7 +2,9 @@
 import asyncio
 import base64
 import binascii
+import hashlib
 import re
+from collections import OrderedDict
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from p115client import P115Client, check_response
@@ -71,6 +73,7 @@ def link_identity(link):
 class Provider:
     def __init__(self):
         self.global_limit = asyncio.Semaphore(8)
+        self._clients = OrderedDict()
 
     async def call(self, fn, *args, timeout=12, **kwargs):
         try:
@@ -93,7 +96,20 @@ class Provider:
             raise UpstreamError('temporary', '115暂时不可达，请稍后重试') from None
 
     def client(self, cookie):
-        return P115Client(cookie)
+        key = hashlib.sha256(cookie.encode()).hexdigest()
+        cached = self._clients.get(key)
+        if cached is not None:
+            self._clients.move_to_end(key)
+            return cached
+        c = P115Client(cookie)
+        self._clients[key] = c
+        if len(self._clients) > 64:
+            self._clients.popitem(last=False)
+        return c
+
+    def drop_client(self, cookie):
+        if cookie:
+            self._clients.pop(hashlib.sha256(cookie.encode()).hexdigest(), None)
 
     async def verify(self, cookie):
         pairs = dict(part.strip().split('=', 1) for part in cookie.split(';') if '=' in part)
@@ -117,7 +133,7 @@ class Provider:
         # 改用 token 里的完整链接本地生成。
         qr_url = token.get('qrcode') or ('https://115.com/scan/dg-' + token['uid'])
         try:
-            png = make_qr_png(qr_url)
+            png = await asyncio.to_thread(make_qr_png, qr_url)
         except Exception:
             png = await self.call(P115Client.login_qrcode, token['uid'], app=app)
         if not isinstance(png, bytes) or not png.startswith(b'\x89PNG'):
