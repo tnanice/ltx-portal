@@ -129,11 +129,16 @@ def test_unknown_submission_reconciles_without_resubmit(env):
 def test_timeout_is_read_only_and_missing_requires_explicit_retry(env):
     app, c, fake = env
     uid = login(c); bind(c); tid = completed(app, c, uid)
+    prepared = c.post('/api/playback/tickets', json={'task_id': tid, 'pickcode': 'file-1'})
+    assert prepared.status_code == 200
+    assert not fake.calls  # Issuing a ticket does not block on a throwaway 115 API call.
+    url = prepared.json()['url']
     fake.direct_error = UpstreamError('temporary', '超时')
-    assert c.post('/api/playback/tickets', json={'task_id': tid, 'pickcode': 'file-1'}).status_code == 503
+    assert c.get(url, follow_redirects=False).status_code == 503
     assert c.get('/api/me/tasks/'+tid).json()['state'] == 'completed'
     fake.direct_error = UpstreamError('missing', '已删除')
-    assert c.post('/api/playback/tickets', json={'task_id': tid, 'pickcode': 'file-1'}).status_code == 404
+    assert c.get(url, follow_redirects=False).status_code == 404
+    assert c.get('/api/me/tasks/'+tid).json()['state'] == 'missing'
     assert fake.deletes == []
     assert c.post('/api/me/tasks/'+tid+'/retry').status_code == 200
     assert fake.deletes == ['test']
@@ -254,16 +259,14 @@ def test_delete_or_cancel_timeout_preserves_record(env, operation, state):
     assert c.get('/api/me/tasks/'+tid).json()['state'] == state
 
 
-def test_prepare_does_not_recreate_ticket_after_concurrent_delete(env):
+def test_prepare_rejects_deleted_task_without_upstream_call(env):
     app, c, fake = env
     uid = login(c); bind(c)
     tid = completed(app, c, uid)
-    async def direct_then_deleted(cookie, pick, ua):
-        app.state.db.run('DELETE FROM tasks WHERE id=?', (tid,))
-        return 'https://cdn.example.test/video', time.time()+60
-    fake.direct = direct_then_deleted
+    app.state.db.run('DELETE FROM tasks WHERE id=?', (tid,))
     assert c.post('/api/playback/tickets', json={'task_id':tid,'pickcode':'file-1'}).status_code == 404
     assert c.get('/api/playback/tickets').json() == []
+    assert not fake.calls
 
 
 def test_instant_offline_reconciles_in_the_submission_pass(env):

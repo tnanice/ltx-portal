@@ -539,17 +539,9 @@ def create_app(config=None, provider=None):
         selected = next((f for f in json.loads(row['files']) if f['pickcode'] == body.pickcode), None)
         if row['state'] not in ('completed', 'missing') or not selected:
             raise HTTPException(404, '任务中没有此视频')
-        b = svc.binding(u['id'])
-        try:
-            # Validation URL is not reused for players: their UA differs.
-            await svc.provider_for(b).direct(svc.cookie(b), body.pickcode, 'LTX-Metadata/1.0')
-        except UpstreamError as e:
-            if e.kind == 'missing':
-                svc.task_update(row, state='missing', error='文件已失效，可选择其他文件或明确重试')
-            raise
+        svc.binding(u['id'])
         if not svc.current(u['id'], row['revision']):
             raise HTTPException(409, '账号绑定已变化，请重新准备')
-        own_task(body.task_id, u['id'])  # May have been deleted during the metadata request.
         if not db.one('SELECT token FROM sessions WHERE token=? AND expires>?', (u['session_token'], time.time())):
             raise HTTPException(401)
         token, now = secrets.token_urlsafe(32), time.time()
@@ -574,7 +566,15 @@ def create_app(config=None, provider=None):
         ua = request.headers.get('user-agent', '')
         if len(ua) > 2048:
             raise HTTPException(400, 'User-Agent过长')
-        target = await svc.direct(row, ua)
+        try:
+            target = await svc.direct(row, ua)
+        except UpstreamError as e:
+            if e.kind == 'missing':
+                task = db.one('SELECT * FROM tasks WHERE id=? AND user_id=? AND revision=?',
+                              (row['task_id'], row['user_id'], row['revision']))
+                if task:
+                    svc.task_update(task, state='missing', error='文件已失效，可选择其他文件或明确重试')
+            raise
         ticket_row(token)  # account might have been disabled while awaiting 115
         return RedirectResponse(target, status_code=302, headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
 
